@@ -36,6 +36,7 @@ macs2 = function(sample, control, qvalue=0.01, extsize=200, output_dir="data/mac
 }
 
 main = function() {
+  #TEst
   bait_region = 1e6
   baits_df = readr::read_tsv("data/baits.tsv")
   samples_df = readr::read_tsv("data/samples.tsv")
