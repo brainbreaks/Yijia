@@ -1,0 +1,4 @@
+bait_id	sample_name	sample_file	sample_desc	sample_color
+bait1	JJ001	JJ01_B400_012	Control	#E41A1C
+bait1	JJ002	JJ02_B400_012	4Gr	#377EB8
+bait1	JJ003	JJ03_B400_012	4Gr + PARPi	#4DAF4A
