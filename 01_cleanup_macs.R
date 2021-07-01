@@ -5,6 +5,7 @@ library(gridExtra)
 library(GenomicRanges)
 library(ggridges)
 library(circlize)
+library(forcats)
 
 scale_breaks = function(x) {
     breaks = seq(0, max(x), 1e8)
@@ -33,7 +34,9 @@ repeatmasker_cols = cols(
   repeatmasker_class=col_character(), repeatmasker_family=col_character()
 )
 
-plot_circos = function(data, circos_bw=5e6-1) {
+plot_circos = function(data, hits=NULL, circos_bw=5e6-1) {
+  cytoband = read.cytoband(system.file(package = "circlize", "extdata", "cytoBand.txt"), species="hg19")
+
   x = data %>%
     dplyr::mutate(
       B_Rstart=floor(B_Rstart/circos_bw)*(circos_bw+1), B_Rend=B_Rstart+circos_bw-1,
@@ -63,6 +66,10 @@ plot_circos = function(data, circos_bw=5e6-1) {
         circlize::circos.rect(xleft=region$Rstart, xright=region$Rend, ybottom=0, ytop=log10(value$count), col="#333333", border="#333333")
           # circos.genomicLines(region, value, pch = 16, cex = 0.3)
   })
+  circlize::circos.genomicTrack(hits, bg.border=NA, ylim=c(0,1), track.height=0.01, cell.padding=c(0,0),
+      panel.fun = function(region, value, ...) {
+        circlize::circos.rect(xleft=region$macs_start, xright=region$macs_end, ybottom=0, ytop=1, col="#FF3333", border="#FF3333")
+  })
   circlize::circos.genomicLink(
     region1=x %>% dplyr::filter(count>=circos_mincount) %>% dplyr::select(chr=B_Rname, start=B_Rstart, end=B_Rend),
     region2=x %>% dplyr::filter(count>=circos_mincount) %>% dplyr::select(chr=Rname, start=Rstart, end=Rend),
@@ -71,18 +78,26 @@ plot_circos = function(data, circos_bw=5e6-1) {
 }
 
 
-macs2 = function(sample, control, qvalue=0.01, extsize=200, slocal=1000, output_dir="data/macs2", llocal=10000000) {
-  bed_sample = sample
-  bed_control = "data/JJ02_B400_012.bed"
-  name = gsub(".bed$", "", basename(sample))
-  cmd = stringr::str_glue("macs2 callpeak -t {bed_sample} -c {bed_control} --seed 123 -f BED -g hs --keep-dup all -n {name} --outdir {output_dir} --nomodel --slocal {slocal} --extsize {extsize} -q {qvalue} --llocal {llocal} --bdg --trackline", bed_sample=sample, bed_control=control, name=name, output_dir=output_dir, extsize=extsize, qvalue=qvalue, llocal=sprintf("%0.0f", llocal), slocal=sprintf("%0.0f", slocal))
+macs2 = function(name, sample, control=NULL, qvalue=0.01, extsize=200, slocal=1000, output_dir="data/macs2", llocal=10000000) {
+  bed_sample = paste("-t", sample)
+  bed_control = ifelse(is.null(control), "", paste("-c", control))
+
+  cmd = stringr::str_glue("macs2 callpeak {bed_sample} {bed_control} --seed 123 -f BED -g hs --keep-dup all -n {name} --outdir {output_dir} --nomodel --slocal {slocal} --extsize {extsize} -q {qvalue} --llocal {llocal} --bdg --trackline", bed_sample=bed_sample, bed_control=bed_control, name=name, output_dir=output_dir, extsize=extsize, qvalue=qvalue, llocal=sprintf("%0.0f", llocal), slocal=sprintf("%0.0f", slocal))
   print(cmd)
   system(cmd)
+
+  readr::read_tsv(paste0(output_dir, "/", name, "_peaks.xls"), comment="#", col_names=names(macs_cols$cols), col_types=macs_cols) %>%
+    dplyr::slice(-1) %>%
+    dplyr::select(-macs_comment)
 }
 
 main = function() {
+  macs_extsize=2000
+  macs_qvalue=0.001
+  macs_slocal=1e7
+  macs_llocal=1e7
   bait_region = 1e6
-  cytoband = read.cytoband(system.file(package = "circlize", "extdata", "cytoBand.txt"), species="hg19")
+
   baits_df = readr::read_tsv("data/baits.tsv")
   samples_df = readr::read_tsv("data/samples.tsv")
   offtargets_df = readr::read_tsv("data/offtargets.tsv")
@@ -94,6 +109,7 @@ main = function() {
   # system("singularity exec -B `pwd` htgts_latest.sif download hg19")
 
   tlx2repeatmasker_all = data.frame()
+  islands_all = data.frame()
   for(f in list.files("data/htgts", pattern="*._result.tlx", full.names=T))
   {
     sample_file = gsub("_result.tlx", "", basename(f))
@@ -122,26 +138,33 @@ main = function() {
     dir.create(file.path(dirname(f), "tmp"), showWarnings=F)
 
     tlx2repeatmasker_filter = tlx2repeatmasker %>%
-      # dplyr::filter(is.na(repeatmasker_class)) %>%
-      dplyr::filter(bait_chrom==Rname & abs(Junction-bait_start)>=bait_region/2)
+      dplyr::filter(is.na(repeatmasker_class)) %>%
+      dplyr::filter(!(bait_chrom==Rname & abs(Junction-bait_start)<=bait_region/2))
     readr::write_tsv(tlx2repeatmasker_filter[,names(tlx_cols$cols)], file=f_norepeats, na="")
     system(stringr::str_glue("singularity exec -B `pwd` htgts_latest.sif tlx2BED-MACS.pl {tlx} {bed} 0", tlx=f_norepeats, bed=f_bed))
 
-    # system("singularity exec -B `pwd` htgts_latest.sif TranslocPreprocess.pl tutorial_metadata.txt preprocess --read1 pooled_R1.fastq.gz --read2 pooled_R2.fastq.gz")
-    # system("singularity exec -B `pwd` htgts_latest.sif TranslocWrapper.pl tutorial_metadata.txt preprocess/ results/ --threads 2")
-    # system(stringr::str_glue("macs2 pileup -i {bed} -f BED -o {output_name} --outdir {output_dir} --extsize 2000", bed=f_bed, output_name=sample, output_dir="data/macs2"))
-    # system(stringr::str_glue("macs2 callpeak -t {bed} -f BED -g hs --keep-dup all -n {output_name} --outdir {output_dir} --nomodel --extsize 2000 -q 0.001 --llocal 10000000", bed=f_bed, output_name=sample, output_dir="data/macs2"))
-    # macs2 callpeak -t {input} -f BED -g mm --keep-dup all -n {output} --outdir {outdir} --nomodel --extsize 2000 -q 0.01 --llocal 10000000
+    islands_df = macs2(paste0(sample_file, "_localbg"), f_bed, extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)  %>%
+      dplyr::mutate(sample_file=sample_file)
+    islands_all = dplyr::bind_rows(islands_all, islands_df)
   }
+  cmpislands2vs3_df = macs2("JJ03_B400_012_bg", sample="data/htgts/tmp/JJ03_B400_012_result_clean.bed", control="data/htgts/tmp/JJ02_B400_012_result_clean.bed", extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)
+
+  cmpislands2_df = macs2("JJ03_B400_012_bg", sample="data/htgts/tmp/JJ03_B400_012_result_clean.bed", control="data/htgts/tmp/JJ01_B400_012_result_clean.bed", extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)
+  cmpislands3_df = macs2("JJ02_B400_012_bg", sample="data/htgts/tmp/JJ02_B400_012_result_clean.bed", control="data/htgts/tmp/JJ01_B400_012_result_clean.bed", extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)
 
   #
   # Plot CIRCOS
   #
-  pdf("meeting/circos.pdf", width=20, height=20)
+  pdf("meeting/circos2.pdf", width=20, height=20)
   layout(matrix(1:4, 2, 2))
   for(smpl in unique(tlx2repeatmasker_all$sample_file)) {
+    smpl2 = gsub("JJ([0-9]+)_.*", "JJ0\\1", smpl)
+    hits_df = readr::read_tsv(paste0("data/processed/", smpl2, "_peaks.xls"), comment="#", col_names=names(macs_cols$cols), col_types=macs_cols) %>%
+      dplyr::slice(-1) %>%
+      dplyr::select(-macs_comment)
+
     data = tlx2repeatmasker_all %>% dplyr::filter(sample_file==smpl & Rname %in% paste0("chr", c(1:22,"X", "Y")))
-    plot_circos(data)
+    plot_circos(data, hits_df)
     title(unique(tlx2repeatmasker_all %>% dplyr::filter(sample_file==smpl) %>% .$sample_desc), cex.main=2)
   }
   plot.new()
@@ -157,24 +180,41 @@ main = function() {
     tlx2repeatmasker_all %>% dplyr::mutate(filter="All junctions (excluding bait region)") %>% dplyr::filter(bait_chrom==Rname & abs(Junction-bait_start)>=bait_region/2),
     tlx2repeatmasker_all %>% dplyr::mutate(filter="Junctions excluding repeats (excluding bait region)") %>% dplyr::filter(is.na(repeatmasker_class) & bait_chrom==Rname & abs(Junction-bait_start)>=bait_region/2))
   tlx2repeatmasker_ggplot = dplyr::bind_rows(
-    tlx2repeatmasker_ggplot %>% dplyr::mutate(filter=paste(filter, "/ All chromosomes")),
-    tlx2repeatmasker_ggplot %>% dplyr::filter(Rname==bait_chrom) %>% dplyr::mutate(filter=paste(filter, "/ Only bait chromosome")))
+    tlx2repeatmasker_ggplot %>% dplyr::mutate(filter2=paste(filter, "/ All chromosomes"), chromosomes="All chromosomes"),
+    tlx2repeatmasker_ggplot %>% dplyr::filter(Rname==bait_chrom) %>% dplyr::mutate(filter2=paste(filter, "/ Only bait chromosome"), chromosomes="Only bait chromosome"))
   samples_colors = with(tlx2repeatmasker_ggplot %>% dplyr::distinct(sample_desc, .keep_all=T), setNames(as.character(sample_color), sample_desc))
 
-  tlx2repeatmasker_ggplot %>%
-    reshape2::dcast(filter ~ sample_desc) %>%
-    readr::write_tsv("meeting/reads_counts.tsv")
+  pdf("meeting/reads_counts.pdf", paper="a4r", width=11.75, height=8.25)
+  breaks_1k = function(x) {
+    breaks = seq(0, max(x), 1e3)
+    names(breaks) = paste0(breaks/1e3, "k")
+    breaks
+  }
+  ggplot(tlx2repeatmasker_ggplot) +
+    geom_bar(aes(x=forcats::fct_infreq(filter)), position="dodge") +
+    coord_flip() +
+    labs(x="", y="Junctions count") +
+    facet_grid(sample_desc~chromosomes) +
+    scale_y_continuous(breaks=breaks_1k) +
+    theme_bw(base_size=15)
 
+
+  breaks_sub1k = function(x) {
+    breaks = seq(0, max(x), 250)
+    names(breaks) = paste0(breaks/1e3, "k")
+    breaks
+  }
   tlx2repeatmasker_ggplot %>%
-    dplyr::filter(filter=="All junctions (excluding bait region) / Only bait chromosome") %>%
+    dplyr::filter(chromosomes=="Only bait chromosome" & grepl("All junctions", filter)) %>%
     tidyr::separate_rows(repeatmasker_class) %>%
-    reshape2::dcast(repeatmasker_class ~ sample_desc) %>%
-    dplyr::arrange(dplyr::desc(Control)) %>%
-    readr::write_tsv("meeting/reads_counts_repeats.tsv")
-
-  # LTR - identical sequence at end of retrotransposon
-  # Satellite - tandem repeats
-  # LINE 7000bp transposons
+    ggplot() +
+      geom_bar(aes(x=forcats::fct_infreq(repeatmasker_class)), position="dodge") +
+      coord_flip() +
+      labs(x="", y="Junctions count") +
+      facet_grid(sample_desc~filter, scales="free") +
+      scale_y_continuous(breaks=breaks_sub1k) +
+      theme_bw(base_size=15)
+  dev.off()
 
 
   pdf("meeting/breaks_density.pdf", width=30, height=30)
@@ -200,12 +240,6 @@ main = function() {
     facet_wrap(~filter2, scales="free") +
     theme_bw(base_size=16)
   dev.off()
-
-  #
-  # macs2(sample="data/JJ02_B400_012.bed", control="data/JJ01_B400_012.bed")
-  # macs2(sample="data/JJ03_B400_012.bed", control="data/JJ01_B400_012.bed")
-  macs2(sample="data/htgts/tmp/JJ03_B400_012_result_clean.bed", control="data/htgts/tmp/JJ01_B400_012_result_clean.bed", extsize=1000, qvalue=0.01, slocal=5e6, llocal=5e6)
-  macs2(sample="data/htgts/tmp/JJ02_B400_012_result_clean.bed", control="data/htgts/tmp/JJ01_B400_012_result_clean.bed", extsize=1000, qvalue=0.01, slocal=5e6, llocal=5e6)
 }
 
 
