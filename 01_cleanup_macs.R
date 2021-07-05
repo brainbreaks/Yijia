@@ -92,11 +92,13 @@ macs2 = function(name, sample, control=NULL, qvalue=0.01, extsize=200, slocal=10
 }
 
 main = function() {
+  macs_junction_size=300
   macs_extsize=2000
   macs_qvalue=0.001
-  macs_slocal=1e7
+  macs_slocal=1e3
   macs_llocal=1e7
-  bait_region = 1e6
+  # bait_region = 1e6
+  bait_region = 20000
 
   baits_df = readr::read_tsv("data/baits.tsv")
   samples_df = readr::read_tsv("data/samples.tsv")
@@ -140,17 +142,21 @@ main = function() {
     tlx2repeatmasker_filter = tlx2repeatmasker %>%
       dplyr::filter(is.na(repeatmasker_class)) %>%
       dplyr::filter(!(bait_chrom==Rname & abs(Junction-bait_start)<=bait_region/2))
-    readr::write_tsv(tlx2repeatmasker_filter[,names(tlx_cols$cols)], file=f_norepeats, na="")
-    system(stringr::str_glue("singularity exec -B `pwd` htgts_latest.sif tlx2BED-MACS.pl {tlx} {bed} 0", tlx=f_norepeats, bed=f_bed))
+    readr::write_tsv(tlx2repeatmasker_filter[,names(tlx_cols$cols)] %>% dplyr::mutate(), file=f_norepeats, na="")
+    system(stringr::str_glue("singularity exec -B `pwd` htgts_latest.sif tlx2BED-MACS.pl {tlx} {bed} {extsize}", tlx=f_norepeats, bed=f_bed, extsize=macs_junction_size))
 
     islands_df = macs2(paste0(sample_file, "_localbg"), f_bed, extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)  %>%
       dplyr::mutate(sample_file=sample_file)
     islands_all = dplyr::bind_rows(islands_all, islands_df)
   }
   cmpislands2vs3_df = macs2("JJ03_B400_012_bg", sample="data/htgts/tmp/JJ03_B400_012_result_clean.bed", control="data/htgts/tmp/JJ02_B400_012_result_clean.bed", extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)
-
   cmpislands2_df = macs2("JJ03_B400_012_bg", sample="data/htgts/tmp/JJ03_B400_012_result_clean.bed", control="data/htgts/tmp/JJ01_B400_012_result_clean.bed", extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)
   cmpislands3_df = macs2("JJ02_B400_012_bg", sample="data/htgts/tmp/JJ02_B400_012_result_clean.bed", control="data/htgts/tmp/JJ01_B400_012_result_clean.bed", extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)
+
+  islands_df = macs2(paste0(sample_file, "_localbg"), f_bed, extsize=macs_extsize, qvalue=macs_qvalue, slocal=macs_slocal, llocal=macs_llocal)  %>%
+    dplyr::mutate(sample_file=sample_file)
+  table(islands_df$macs_chrom)
+  View(islands_df)
 
   #
   # Plot CIRCOS
